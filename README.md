@@ -32,23 +32,101 @@ Java 17 ve Spring Boot 3.5.7 ile geliştirilmiş, JWT tabanlı rol yönetimine s
 
 ## Mimari
 
+```mermaid
+flowchart LR
+    CLIENT(["İstemci<br/>SPA · Postman"])
+
+    subgraph APP["job-board-api · Spring Boot 3.5.7 (Java 17)"]
+        direction TB
+        SEC["Güvenlik zinciri<br/>JWT doğrulama · rate limit · CORS"]
+        CTRL["Controller<br/>REST uç noktaları"]
+        SVC["Service<br/>iş kuralları · @Transactional"]
+        REPO["Repository<br/>Spring Data JPA"]
+        MAIL["MailService<br/>asenkron"]
+        FILES["FileStorageService"]
+        SEC --> CTRL
+        CTRL --> SVC
+        SVC --> REPO
+        SVC --> MAIL
+        SVC --> FILES
+    end
+
+    PG[("PostgreSQL 16<br/>Flyway migration")]
+    MINIO[("MinIO<br/>S3 uyumlu kova")]
+    SMTP["SMTP sunucusu<br/>yerelde Mailpit"]
+
+    CLIENT -->|"HTTPS · JSON / multipart"| SEC
+    REPO -->|"JDBC"| PG
+    FILES -->|"S3 API · presigned URL"| MINIO
+    MAIL -->|"SMTP"| SMTP
 ```
-İstemci
-  │
-  ▼
-Spring Security / JwtAuthenticationFilter
-  │
-  ▼
-Controller → Service → Repository → PostgreSQL
-           │
-           ├── MinioClient → MinIO
-           └── MailService (async) → SMTP / Mailpit
-```
+
+İstemci isteği güvenlik zincirinden geçer; Controller → Service → Repository hattı PostgreSQL'e ulaşır. Service katmanı ayrıca CV'ler için MinIO'ya, bildirimler için SMTP sunucusuna bağlanır.
 
 - Controller yalnızca HTTP katmanını yönetir.
 - İş kuralları ve transaction sınırları Service katmanındadır.
 - Entity'ler doğrudan dışarı açılmaz; Request/Response DTO'ları ve manuel mapper'lar kullanılır.
 - Hatalar `ApiException` alt sınıfları ve `GlobalExceptionHandler` ile tek noktadan üretilir.
+
+### Katmanlı Mimari
+
+```mermaid
+flowchart TB
+    CLIENT(["İstemci<br/>JSON · multipart/form-data"])
+
+    subgraph SECURITY["1 · Güvenlik katmanı — Spring Security filter chain"]
+        JWT["JwtAuthenticationFilter<br/>Bearer token → SecurityContext"]
+        RATE["RateLimitFilter + RateLimiter<br/>JVM belleğinde ConcurrentHashMap"]
+        HANDLERS["RestAuthenticationEntryPoint<br/>RestAccessDeniedHandler<br/>401 · 403 JSON"]
+        JWT --> RATE
+        RATE -.->|"hata"| HANDLERS
+    end
+
+    subgraph WEB["2 · Sunum katmanı"]
+        VALID["Bean Validation<br/>@Valid · Request DTO"]
+        CTRL["9 Controller<br/>Auth · Job · Application · Company · Category<br/>Skill · Profile · SavedJob · File"]
+        RESP["Response DTO<br/>PageResponse sarmalayıcı"]
+        ADV["GlobalExceptionHandler<br/>@RestControllerAdvice"]
+        VALID --> CTRL
+        CTRL --> RESP
+        ADV -.->|"ApiException"| CTRL
+    end
+
+    subgraph BIZ["3 · İş katmanı"]
+        SVC["Service<br/>iş kuralları · sahiplik ve durum kontrolleri"]
+        MAP["Mapper<br/>Entity ↔ DTO"]
+        SVC --> MAP
+    end
+
+    subgraph PERSIST["4 · Kalıcılık katmanı"]
+        REPO["Repository<br/>Spring Data JPA"]
+        ENT["Entity + Enum<br/>11 entity · 5 enum"]
+        REPO --- ENT
+    end
+
+    PG[("PostgreSQL 16<br/>Flyway V1–V5 · ddl-auto: validate")]
+
+    MAIL["MailService<br/>@Async mailTaskExecutor"]
+    STORAGE["FileStorageService<br/>boyut · uzantı · magic bytes"]
+    SMTP["SMTP<br/>yerelde Mailpit"]
+    MINIO[("MinIO<br/>private kova · presigned URL")]
+    CACHE["Cache / Redis<br/>bu projede yok"]:::absent
+
+    CLIENT --> JWT
+    RATE --> CTRL
+    CTRL --> SVC
+    SVC --> REPO
+    REPO --> PG
+    SVC --> MAIL
+    MAIL --> SMTP
+    SVC --> STORAGE
+    STORAGE --> MINIO
+    SVC -.->|"kullanılmıyor"| CACHE
+
+    classDef absent fill:#f6f6f6,stroke:#bbb,stroke-dasharray:4 3,color:#888
+```
+
+Her katman yalnızca bir sonrakine bağlıdır: güvenlik zinciri isteği doğrular, Controller DTO/validasyonla sınırlı kalır, iş kuralları ve transaction sınırları Service'te yaşar, kalıcılık Repository üzerinden PostgreSQL'e gider. Projede Redis/cache katmanı yoktur; rate limiting JVM belleğinde tutulur.
 
 ## Hızlı Başlangıç
 
