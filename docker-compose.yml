@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: job-board-postgres
+    environment:
+      POSTGRES_DB: jobboard
+      POSTGRES_USER: ${POSTGRES_USER:-jobboard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD tanımlı değil (.env dosyasına bakın)}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jobboard} -d jobboard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    # NOT: MinIO Ekim 2025'ten itibaren Docker Hub'a imaj yayınlamıyor.
+    # RELEASE.2025-10-15T17-29-55Z bir CVE düzeltmesi içeriyor ancak imajı
+    # Docker Hub'da yok; alternatif olarak quay.io/minio/minio veya
+    # coollabsio/minio:RELEASE.2025-10-15T17-29-55Z kullanılabilir.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: job-board-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER tanımlı değil (.env dosyasına bakın)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD tanımlı değil (.env dosyasına bakın)}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+
+  mailpit:
+    image: axllent/mailpit:v1.33.0
+    container_name: job-board-mailpit
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+
+volumes:
+  postgres_data:
+  minio_data:

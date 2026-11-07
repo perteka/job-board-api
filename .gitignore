@@ -1,0 +1,50 @@
+# Build çıktıları
+target/
+build/
+out/
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Loglar
+*.log
+logs/
+
+# Ortam / secret dosyaları
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.keystore
+*.p12
+secrets/
+
+# Maven
+pom.xml.tag
+pom.xml.releaseBackup
+release.properties
+dependency-reduced-pom.xml
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Test / coverage
+*.exec
+*.exec.gz
+jacoco/
+coverage/
