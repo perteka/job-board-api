@@ -1,50 +1,108 @@
+# =============================================================================
+# Job Board & Application API — .gitignore
+# =============================================================================
+
+# ---------------------------------------------------------------
 # Build çıktıları
+# ---------------------------------------------------------------
 target/
 build/
 out/
 *.class
 *.jar
 *.war
+*.ear
 
-# IDE
+# ---------------------------------------------------------------
+# IDE / Editör
+# ---------------------------------------------------------------
 .idea/
 *.iml
+*.ipr
+*.iws
 .vscode/
 .settings/
 .classpath
 .project
-*.ipr
-*.iws
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*~
 
-# OS
+# ---------------------------------------------------------------
+# İşletim Sistemi
+# ---------------------------------------------------------------
 .DS_Store
 Thumbs.db
 desktop.ini
+ehthumbs.db
+Icon?
 
+# ---------------------------------------------------------------
 # Loglar
+# ---------------------------------------------------------------
 *.log
 logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Ortam / secret dosyaları
+# ---------------------------------------------------------------
+# Ortam / secret dosyaları (asla commitlenmez)
+# ---------------------------------------------------------------
 .env
 .env.local
 .env.*.local
 *.pem
 *.key
 *.keystore
+*.jks
 *.p12
 secrets/
+credentials/
 
+# ---------------------------------------------------------------
 # Maven
+# ---------------------------------------------------------------
 pom.xml.tag
 pom.xml.releaseBackup
+pom.xml.versionsBackup
 release.properties
 dependency-reduced-pom.xml
 .mvn/timing.properties
 .mvn/wrapper/maven-wrapper.jar
 
-# Test / coverage
+# ---------------------------------------------------------------
+# Test / coverage / raporlar
+# ---------------------------------------------------------------
 *.exec
 *.exec.gz
 jacoco/
+jacoco-test-report/
 coverage/
+coverage.xml
+test-results/
+surefire-reports/
+failsafe-reports/
+
+# ---------------------------------------------------------------
+# Spring Boot / actüator
+# ---------------------------------------------------------------
+.application.pid
+
+# ---------------------------------------------------------------
+# Diğer
+# ---------------------------------------------------------------
+*.orig
+*.bak
+tmp/
+temp/
+.cache/
+
+# =============================================================================
+# Uyarı: .env.example depoya eklenebilir (örnek amaçlı),
+# ancak gerçek .env dosyası asla eklenmemelidir.
+# =============================================================================

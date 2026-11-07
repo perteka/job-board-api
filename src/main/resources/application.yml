@@ -40,6 +40,16 @@ spring:
       max-file-size: 5MB
       max-request-size: 6MB
 
+  # Actuator (sadece health endpoint'i açıktır)
+  management:
+    endpoints:
+      web:
+        exposure:
+          include: health
+    endpoint:
+      health:
+        show-details: never
+
 server:
   port: 8080
   forward-headers-strategy: ${FORWARD_HEADERS_STRATEGY:none}
