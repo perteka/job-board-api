@@ -481,4 +481,4 @@ job-board-api/
 
 ## Lisans
 
-Bu proje özel bir projedir; lisans bilgisi ekleyebilirsiniz.
+Bu depoda henüz bir lisans dosyası bulunmuyor. Kullanım ve yeniden dağıtım koşulları için depo sahibiyle iletişime geçin.
