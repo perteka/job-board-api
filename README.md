@@ -1,396 +1,243 @@
 # Job Board & Application API
 
-Java 17 ve Spring Boot 3.5.7 ile geliştirilmiş, JWT tabanlı rol yönetimine sahip bir iş ilanı ve başvuru yönetim REST API'si. İşverenler firma oluşturup ilan yayınlayabilir, adaylar CV yükleyip başvurabilir; başvurular `APPLIED → REVIEWED → HIRED / REJECTED` akışıyla yönetilir.
+İşverenlerin ilan yayınlayabildiği, adayların ilan arayıp başvuru yapabildiği bir REST API. Uygulama Java 17 ve Spring Boot 3.5.7 ile geliştirilmiştir. Adaylar CV’lerini yükleyebilir; işverenler başvuruları inceleyip durumlarını güncelleyebilir.
 
-## Özellikler
+## Neler sunuyor?
 
-- **JWT kimlik doğrulama:** Access token + yenileme (refresh) tokenı, BCrypt şifreleme ve stateless oturum.
-- **Rol bazlı yetkilendirme:** `CANDIDATE`, `EMPLOYER` ve `ADMIN` rolleri; kayıt sırasında `ADMIN` rolü oluşturulamaz.
-- **Firma ve ilan yönetimi:** İşveren başına tek firma; taslak, yayında, kapalı ve arşiv durumları.
-- **Başvuru akışı:** Aynı ilana ikinci başvuru engeli, katı durum geçiş kuralları ve sahiplik kontrolleri.
-- **Arama ve sayfalama:** Başlık/açıklamada anahtar kelime, konumda şehir filtresi; tüm listeler sayfalanır.
-- **CV depolama:** MinIO (S3-uyumlu) üzerinde PDF, DOC ve DOCX; 5 MB boyut sınırı ve imzalı indirme bağlantısı.
-- **E-posta bildirimleri:** Başvuru alındığında ve durum değiştiğinde asenkron e-posta; yerelde Mailpit ile görüntülenir.
-- **Merkezi hata yönetimi:** Doğrulama, kimlik, yetki ve iş kuralı hataları için tutarlı JSON yanıtı.
-- **Veritabanı sürümleme:** Flyway migration ve Hibernate `ddl-auto: validate`.
-- **Testler:** JUnit 5 + Mockito servis testleri.
+- JWT tabanlı kimlik doğrulama; access ve refresh token desteği
+- `CANDIDATE`, `EMPLOYER` ve `ADMIN` rolleri için yetkilendirme
+- İşverenler için şirket ve ilan yönetimi
+- Adaylar için ilan arama, CV yükleme ve başvuru takibi
+- Başlık, açıklama ve şehir bilgisine göre arama; sayfalı listeleme
+- CV’leri MinIO’da saklama ve süreli indirme bağlantıları oluşturma
+- Başvuru ve durum değişiklikleri için e-posta bildirimi
+- Flyway ile veritabanı şema yönetimi
 
-## Teknoloji Stack
+## Kullanılan teknolojiler
 
-| Katman | Teknoloji |
-|--------|-----------|
-| Dil / çalışma zamanı | Java 17 |
-| Framework | Spring Boot 3.5.7, Spring Web, Spring Data JPA |
-| Güvenlik | Spring Security, JJWT 0.12.6, BCrypt |
+| Alan | Teknoloji |
+|---|---|
+| Dil | Java 17 |
+| Uygulama çatısı | Spring Boot 3.5.7, Spring Web, Spring Data JPA |
+| Kimlik doğrulama | Spring Security, JJWT 0.12.6, BCrypt |
 | Veritabanı | PostgreSQL 16, Flyway |
-| Dosya depolama | MinIO (S3 uyumlu) |
-| E-posta | Spring Mail, Mailpit (yerel SMTP) |
+| Dosya saklama | MinIO (S3 uyumlu) |
+| E-posta | Spring Mail; yerel geliştirmede Mailpit |
 | Doğrulama | Jakarta Bean Validation |
-| Test | JUnit 5, Mockito, AssertJ |
+| Test | JUnit 5, Mockito, AssertJ, Testcontainers |
 | Derleme | Maven Wrapper 3.9.9 |
-| Yardımcı araçlar | Lombok |
 
 ## Mimari
 
+İstekler önce Spring Security zincirinden geçer. Controller katmanı HTTP isteklerini ve DTO’ları yönetir; iş kuralları Service katmanında uygulanır. Veritabanı erişimi Spring Data JPA repository’leri üzerinden yapılır. CV dosyaları MinIO’ya, e-posta bildirimleri SMTP sunucusuna gönderilir.
+
 ```mermaid
 flowchart LR
-    CLIENT(["İstemci<br/>SPA · Postman"])
-
-    subgraph APP["job-board-api · Spring Boot 3.5.7 (Java 17)"]
-        direction TB
-        SEC["Güvenlik zinciri<br/>JWT doğrulama · rate limit · CORS"]
-        CTRL["Controller<br/>REST uç noktaları"]
-        SVC["Service<br/>iş kuralları · @Transactional"]
-        REPO["Repository<br/>Spring Data JPA"]
-        MAIL["MailService<br/>asenkron"]
-        FILES["FileStorageService"]
-        SEC --> CTRL
-        CTRL --> SVC
-        SVC --> REPO
-        SVC --> MAIL
-        SVC --> FILES
-    end
-
-    PG[("PostgreSQL 16<br/>Flyway migration")]
-    MINIO[("MinIO<br/>S3 uyumlu kova")]
-    SMTP["SMTP sunucusu<br/>yerelde Mailpit"]
-
-    CLIENT -->|"HTTPS · JSON / multipart"| SEC
-    REPO -->|"JDBC"| PG
-    FILES -->|"S3 API · presigned URL"| MINIO
-    MAIL -->|"SMTP"| SMTP
-```
-
-İstemci isteği güvenlik zincirinden geçer; Controller → Service → Repository hattı PostgreSQL'e ulaşır. Service katmanı ayrıca CV'ler için MinIO'ya, bildirimler için SMTP sunucusuna bağlanır.
-
-- Controller yalnızca HTTP katmanını yönetir.
-- İş kuralları ve transaction sınırları Service katmanındadır.
-- Entity'ler doğrudan dışarı açılmaz; Request/Response DTO'ları ve manuel mapper'lar kullanılır.
-- Hatalar `ApiException` alt sınıfları ve `GlobalExceptionHandler` ile tek noktadan üretilir.
-
-### Katmanlı Mimari
-
-```mermaid
-flowchart TB
-    CLIENT(["İstemci<br/>JSON · multipart/form-data"])
-
-    subgraph SECURITY["1 · Güvenlik katmanı — Spring Security filter chain"]
-        JWT["JwtAuthenticationFilter<br/>Bearer token → SecurityContext"]
-        RATE["RateLimitFilter + RateLimiter<br/>JVM belleğinde ConcurrentHashMap"]
-        HANDLERS["RestAuthenticationEntryPoint<br/>RestAccessDeniedHandler<br/>401 · 403 JSON"]
-        JWT --> RATE
-        RATE -.->|"hata"| HANDLERS
-    end
-
-    subgraph WEB["2 · Sunum katmanı"]
-        VALID["Bean Validation<br/>@Valid · Request DTO"]
-        CTRL["9 Controller<br/>Auth · Job · Application · Company · Category<br/>Skill · Profile · SavedJob · File"]
-        RESP["Response DTO<br/>PageResponse sarmalayıcı"]
-        ADV["GlobalExceptionHandler<br/>@RestControllerAdvice"]
-        VALID --> CTRL
-        CTRL --> RESP
-        ADV -.->|"ApiException"| CTRL
-    end
-
-    subgraph BIZ["3 · İş katmanı"]
-        SVC["Service<br/>iş kuralları · sahiplik ve durum kontrolleri"]
-        MAP["Mapper<br/>Entity ↔ DTO"]
-        SVC --> MAP
-    end
-
-    subgraph PERSIST["4 · Kalıcılık katmanı"]
-        REPO["Repository<br/>Spring Data JPA"]
-        ENT["Entity + Enum<br/>11 entity · 5 enum"]
-        REPO --- ENT
-    end
-
-    PG[("PostgreSQL 16<br/>Flyway V1–V5 · ddl-auto: validate")]
-
-    MAIL["MailService<br/>@Async mailTaskExecutor"]
-    STORAGE["FileStorageService<br/>boyut · uzantı · magic bytes"]
+    CLIENT([İstemci / Postman])
+    SECURITY["Spring Security<br/>JWT · CORS · istek sınırı"]
+    CONTROLLER["Controller<br/>REST uç noktaları · DTO"]
+    SERVICE["Service<br/>iş kuralları · transaction"]
+    REPOSITORY["Repository<br/>Spring Data JPA"]
+    DATABASE[(PostgreSQL 16)]
+    STORAGE[FileStorageService]
+    MINIO[(MinIO)]
+    MAIL[MailService]
     SMTP["SMTP<br/>yerelde Mailpit"]
-    MINIO[("MinIO<br/>private kova · presigned URL")]
-    CACHE["Cache / Redis<br/>bu projede yok"]:::absent
 
-    CLIENT --> JWT
-    RATE --> CTRL
-    CTRL --> SVC
-    SVC --> REPO
-    REPO --> PG
-    SVC --> MAIL
-    MAIL --> SMTP
-    SVC --> STORAGE
-    STORAGE --> MINIO
-    SVC -.->|"kullanılmıyor"| CACHE
-
-    classDef absent fill:#f6f6f6,stroke:#bbb,stroke-dasharray:4 3,color:#888
+    CLIENT --> SECURITY --> CONTROLLER --> SERVICE --> REPOSITORY --> DATABASE
+    SERVICE --> STORAGE --> MINIO
+    SERVICE --> MAIL --> SMTP
 ```
 
-Her katman yalnızca bir sonrakine bağlıdır: güvenlik zinciri isteği doğrular, Controller DTO/validasyonla sınırlı kalır, iş kuralları ve transaction sınırları Service'te yaşar, kalıcılık Repository üzerinden PostgreSQL'e gider. Projede Redis/cache katmanı yoktur; rate limiting JVM belleğinde tutulur.
+Entity’ler doğrudan API yanıtı olarak kullanılmaz; dışarıya Request/Response DTO’ları verilir. Hatalar merkezi exception handler üzerinden tutarlı JSON yanıtlarına dönüştürülür. İstek sınırı uygulaması JVM belleğinde çalışır; projede Redis kullanılmıyor.
 
-## Hızlı Başlangıç
+## Yerelde çalıştırma
 
 ### Gereksinimler
 
 - JDK 17
 - Docker Desktop (PostgreSQL, MinIO ve Mailpit için)
-- Maven zorunlu değildir; proje Maven Wrapper içerir.
+- Maven kurulumu gerekmez; proje Maven Wrapper içerir.
 
-### 1. Projeyi klonla
+### 1. Depoyu klonlayın
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/perteka/job-board-api.git
 cd job-board-api
 ```
 
-### 2. Ortam değişkenlerini yapılandır
+### 2. Ortam dosyasını hazırlayın
+
+macOS/Linux veya Git Bash:
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` dosyasını açın ve gerekli değerleri doldurun. Bu dosya asla depoya commitlenmez (`.gitignore` içinde).
+Windows PowerShell:
 
-### 3. Yerel servisleri başlat
+```powershell
+Copy-Item .env.example .env
+```
+
+`.env` dosyasındaki boş değerleri yerel ortamınıza göre doldurun. Gerçek parolaları ve anahtarları depoya göndermeyin; `.env` dosyası `.gitignore` içindedir.
+
+### 3. Gerekli servisleri başlatın
 
 ```bash
 docker compose up -d
 docker compose ps
 ```
 
-İlk açılışta imajlar indirileceği için PostgreSQL'in `healthy` olması biraz sürebilir.
+Compose, PostgreSQL, MinIO ve Mailpit’i başlatır. İlk çalıştırmada Docker imajlarının indirilmesi birkaç dakika sürebilir.
 
-| Servis | Adres | Yerel giriş |
-|--------|-------|-------------|
-| PostgreSQL | `127.0.0.1:5432` | `.env` içindeki `POSTGRES_*` değerleri |
-| MinIO API | `http://127.0.0.1:9000` | `.env` içindeki `MINIO_ROOT_*` değerleri |
-| MinIO Konsolu | `http://127.0.0.1:9001` | `.env` içindeki `MINIO_ROOT_*` değerleri |
-| Mailpit SMTP | `127.0.0.1:1025` | — |
-| Mailpit Arayüzü | `http://127.0.0.1:8025` | — |
-| Uygulama | `http://localhost:8080` | — |
+| Servis | Adres |
+|---|---|
+| PostgreSQL | `127.0.0.1:5432` |
+| MinIO API | `http://127.0.0.1:9000` |
+| MinIO konsolu | `http://127.0.0.1:9001` |
+| Mailpit SMTP | `127.0.0.1:1025` |
+| Mailpit arayüzü | `http://127.0.0.1:8025` |
+| Uygulama | `http://localhost:8080` |
 
-### 4. Uygulamayı başlat
+Yerel servis giriş bilgileri `.env` dosyasındaki `POSTGRES_*` ve `MINIO_ROOT_*` değişkenlerinden alınır.
 
-Maven Wrapper ile:
+### 4. Uygulamayı başlatın
+
+macOS/Linux veya Git Bash:
 
 ```bash
-# macOS / Linux / Git Bash
 ./mvnw spring-boot:run
-
-# Windows CMD / PowerShell
-mvnw.cmd spring-boot:run
 ```
 
-Maven kuruluysa `mvn spring-boot:run` de kullanılabilir. IntelliJ IDEA'dan `JobBoardApiApplication` sınıfı da çalıştırılabilir.
+Windows PowerShell veya Komut İstemi:
 
-İlk açılışta Flyway tabloları oluşturur; `DataInitializer` varsayılan kategori ve yetenekleri ekler. Uygulama varsayılan olarak `8080` portunu dinler.
+```powershell
+.\mvnw.cmd spring-boot:run
+```
 
-### 5. Çalıştığını doğrula
+Uygulama başladıktan sonra kategorileri listeleyen uç noktayı çağırarak kontrol edebilirsiniz:
 
 ```bash
 curl http://localhost:8080/api/categories
 ```
 
-`200 OK` ve kategori listesi dönmelidir.
+Başarılı yanıt `200 OK` ve kategori listesidir. Flyway, uygulama açılırken veritabanı migration’larını çalıştırır.
 
-## Ortam Değişkenleri
+## Ortam değişkenleri
 
-`.env.example` dosyası gerekli tüm değişkenleri içerir. Önemli değişkenler:
+`.env.example` dosyasında kullanılan değişkenlerin tamamı bulunur. Başlangıç için özellikle şunları ayarlayın:
 
-| Değişken | Açıklama | Zorunlu |
-|----------|----------|---------|
-| `DB_URL` | JDBC bağlantı adresi | Hayır |
-| `DB_USERNAME` | Veritabanı kullanıcısı | Hayır |
-| `DB_PASSWORD` | Veritabanı şifresi | Evet |
-| `JWT_SECRET` | Access token imzalama anahtarı (en az 32 karakter) | Evet |
-| `MINIO_ENDPOINT` | MinIO API adresi | Hayır |
-| `MINIO_ACCESS_KEY` | MinIO erişim anahtarı | Evet |
-| `MINIO_SECRET_KEY` | MinIO gizli anahtarı | Evet |
-| `MINIO_BUCKET` | CV kovası adı | Hayır |
-| `MAIL_HOST` | SMTP sunucusu | Hayır |
-| `MAIL_PORT` | SMTP portu | Hayır |
-| `MAIL_ENABLED` | E-posta gönderimini açar/kapatır | Hayır |
+| Değişken | Açıklama |
+|---|---|
+| `DB_PASSWORD` | PostgreSQL bağlantı parolası |
+| `JWT_SECRET` | Access token imzalama anahtarı; en az 32 karakter olmalı |
+| `JWT_REFRESH_SECRET` | Refresh token imzalama anahtarı; belirtilmezse `JWT_SECRET` kullanılır |
+| `MINIO_ACCESS_KEY` | Uygulamanın MinIO erişim anahtarı |
+| `MINIO_SECRET_KEY` | Uygulamanın MinIO gizli anahtarı |
+| `POSTGRES_PASSWORD` | Compose içindeki PostgreSQL kullanıcısının parolası |
+| `MINIO_ROOT_PASSWORD` | MinIO yönetici parolası |
 
-PostgreSQL ve MinIO container'ları için ayrıca `POSTGRES_USER`, `POSTGRES_PASSWORD`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` gereklidir.
+`DB_URL`, `DB_USERNAME`, `MINIO_ENDPOINT`, `MINIO_BUCKET`, `MAIL_HOST`, `MAIL_PORT` ve `MAIL_ENABLED` için uygulamada varsayılan değerler tanımlıdır. Compose servisleri için `POSTGRES_USER` ve `MINIO_ROOT_USER` değerleri de isteğe bağlı olarak değiştirilebilir.
 
-## Kimlik Doğrulama ve Roller
+## Roller ve kimlik doğrulama
 
-| Rol | Yetkiler |
-|-----|----------|
-| `CANDIDATE` | Profil, CV yükleme, ilan arama, başvuru, ilan kaydetme |
-| `EMPLOYER` | Firma yönetimi, ilan oluşturma/yayınlama/kapatma, başvuru değerlendirme |
-| `ADMIN` | Rol tanımlıdır ancak public kayıtla oluşturulamaz |
+| Rol | Erişim alanı |
+|---|---|
+| `CANDIDATE` | Profil, CV, ilan arama, başvuru ve kaydedilen ilanlar |
+| `EMPLOYER` | Şirket profili, ilanlar ve başvuruların değerlendirilmesi |
+| `ADMIN` | Uygulamada tanımlıdır; herkese açık kayıt üzerinden oluşturulamaz |
 
-Kayıt veya giriş yanıtındaki `accessToken` korumalı isteklerde şu başlıkla gönderilir:
+Kayıt ve giriş yanıtlarında dönen `accessToken`, korumalı uç noktalara şu başlıkla gönderilir:
 
 ```http
 Authorization: Bearer <accessToken>
 ```
 
-- `POST /api/auth/refresh` — yenileme tokenını döndürür ve eski tokenı iptal eder (rotation).
-- `POST /api/auth/logout` — kullanıcının tüm yenileme tokenlarını iptal eder.
-- Şifreler BCrypt ile saklanır.
+`POST /api/auth/refresh` refresh token’ı yeniler ve önceki token’ı geçersiz kılar. `POST /api/auth/logout` kullanıcının refresh token’larını iptal eder. Parolalar BCrypt ile saklanır.
 
-## API Uç Noktaları
+## API özeti
 
-### Kimlik Doğrulama
-
-| Metot | Yol | Erişim | Açıklama |
-|-------|-----|--------|----------|
-| `POST` | `/api/auth/register` | Herkese açık | Aday veya işveren kaydı |
-| `POST` | `/api/auth/login` | Herkese açık | Giriş; token çifti döner |
-| `POST` | `/api/auth/refresh` | Herkese açık | Refresh token ile yeni token çifti |
-| `POST` | `/api/auth/logout` | Giriş gerekli | Tüm refresh tokenları iptal eder |
-
-### Genel (Herkese Açık)
-
-| Metot | Yol | Erişim | Açıklama |
-|-------|-----|--------|----------|
-| `GET` | `/api/categories` | Herkese açık | Kategorileri listeler |
-| `GET` | `/api/skills` | Herkese açık | Yetenekleri listeler |
-| `GET` | `/api/jobs` | Herkese açık | `keyword`, `city` ve sayfalama ile ilan arar |
-| `GET` | `/api/jobs/{id}` | Herkese açık | Yayındaki ilan detayı; sahibi taslağı da görebilir |
-| `GET` | `/api/companies/{id}` | Herkese açık | Firma detayı |
-
-### Aday (`CANDIDATE`)
+### Kimlik doğrulama
 
 | Metot | Yol | Açıklama |
-|-------|-----|----------|
-| `GET` | `/api/profile/me` | Profili getirir |
-| `PUT` | `/api/profile/me` | Profili günceller |
-| `POST` | `/api/files/cv` | PDF/DOC/DOCX CV yükler |
+|---|---|---|
+| `POST` | `/api/auth/register` | Aday veya işveren kaydı |
+| `POST` | `/api/auth/login` | Giriş ve token çifti |
+| `POST` | `/api/auth/refresh` | Token yenileme |
+| `POST` | `/api/auth/logout` | Oturum token’larını iptal etme |
+
+### Herkese açık uç noktalar
+
+| Metot | Yol | Açıklama |
+|---|---|---|
+| `GET` | `/api/categories` | Kategorileri listeler |
+| `GET` | `/api/skills` | Yetenekleri listeler |
+| `GET` | `/api/jobs` | İlanları arar; `keyword`, `city` ve sayfalama parametrelerini destekler |
+| `GET` | `/api/jobs/{id}` | Yayındaki ilanı getirir; ilan sahibi taslağını da görebilir |
+| `GET` | `/api/companies/{id}` | Şirket bilgilerini getirir |
+
+### Aday uç noktaları (`CANDIDATE`)
+
+| Metot | Yol | Açıklama |
+|---|---|---|
+| `GET` / `PUT` | `/api/profile/me` | Profili görüntüler veya günceller |
+| `POST` | `/api/files/cv` | CV yükler (PDF, DOC veya DOCX) |
 | `POST` | `/api/jobs/{jobId}/applications` | İlana başvurur |
-| `GET` | `/api/applications/me` | Kendi başvurularını listeler |
-| `POST` | `/api/jobs/{jobId}/save` | İlanı kaydeder |
-| `DELETE` | `/api/jobs/{jobId}/save` | Kaydı kaldırır |
+| `GET` | `/api/applications/me` | Başvuruları listeler |
+| `POST` / `DELETE` | `/api/jobs/{jobId}/save` | İlanı kaydeder veya kayıttan çıkarır |
 | `GET` | `/api/saved-jobs` | Kaydedilen ilanları listeler |
 
-### İşveren (`EMPLOYER`)
+### İşveren uç noktaları (`EMPLOYER`)
 
 | Metot | Yol | Açıklama |
-|-------|-----|----------|
-| `POST` | `/api/companies` | Firma oluşturur |
-| `GET` | `/api/companies/me` | Kendi firmasını getirir |
-| `PUT` | `/api/companies/me` | Firmasını günceller |
-| `GET` | `/api/jobs/me` | Kendi ilanlarını listeler |
+|---|---|---|
+| `POST` | `/api/companies` | Şirket profili oluşturur |
+| `GET` / `PUT` | `/api/companies/me` | Şirket profilini görüntüler veya günceller |
+| `GET` | `/api/jobs/me` | İşverenin ilanlarını listeler |
 | `POST` | `/api/jobs` | Taslak ilan oluşturur |
 | `PUT` | `/api/jobs/{id}` | İlanı günceller |
 | `PATCH` | `/api/jobs/{id}/publish` | İlanı yayınlar |
-| `PATCH` | `/api/jobs/{id}/close` | Yayındaki ilanı kapatır |
+| `PATCH` | `/api/jobs/{id}/close` | İlanı kapatır |
 | `PATCH` | `/api/jobs/{id}/archive` | İlanı arşivler |
 | `GET` | `/api/jobs/{jobId}/applications` | İlan başvurularını listeler |
 | `PATCH` | `/api/applications/{id}/status` | Başvuru durumunu değiştirir |
 
-### Dosya
+### Dosya erişimi
 
-| Metot | Yol | Erişim | Açıklama |
-|-------|-----|--------|----------|
-| `GET` | `/api/files/presign?objectKey=cvs/{userId}/...` | Aday | Kendi CV'si için imzalı URL |
-| `GET` | `/api/files/applications/{applicationId}/cv-url` | İşveren | Başvuru CV'si için imzalı URL |
+| Metot | Yol | Açıklama |
+|---|---|---|
+| `GET` | `/api/files/presign?objectKey=cvs/{userId}/...` | Adayın kendi CV’si için süreli indirme bağlantısı üretir |
+| `GET` | `/api/files/applications/{applicationId}/cv-url` | İşverenin başvuru CV’sine erişmesi için bağlantı üretir |
 
-Başarılı yanıtlar: oluşturma `201`, okuma/güncelleme `200`, silme ve çıkış `204`. Sayfalı yanıtlar `content`, `page`, `size`, `totalElements`, `totalPages` ve `last` alanlarını içerir.
+Başarılı oluşturma yanıtları `201`, okuma ve güncelleme yanıtları `200`; silme ve çıkış yanıtları `204` döndürür. Sayfalı listelerde `content`, `page`, `size`, `totalElements`, `totalPages` ve `last` alanları bulunur.
 
-## Örnek Akış
+## Başvuru akışı ve iş kuralları
 
-### 1. Aday kaydı
+Bir aday kayıt olduktan sonra ilanları listeleyebilir ve uygun bir ilana başvurabilir. İşveren kendi şirketini ve ilanlarını yönetir; başvuruları inceleyip durumlarını günceller.
 
-```bash
-curl -X POST http://localhost:8080/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "aday@example.com",
-    "password": "Password123!",
-    "fullName": "Aday Kullanıcı",
-    "role": "CANDIDATE"
-  }'
+Başvurularda izin verilen durum geçişleri şöyledir:
+
+```text
+APPLIED → REVIEWED → HIRED
+                    ↘ REJECTED
 ```
 
-### 2. Firma ve ilan (işveren tokenı ile)
+- Aday aynı ilana ikinci kez başvuramaz; bu kural veritabanında da korunur.
+- Başvuru yalnızca yayındaki ve süresi dolmamış ilanlara yapılabilir.
+- Başvuru sırasında geçerli bir CV anahtarı gerekir.
+- `HIRED` ve `REJECTED` son durumlardır. Aynı duruma tekrar geçiş yeni bildirim göndermez.
+- İşveren yalnızca kendi şirketi, ilanları ve başvuruları üzerinde işlem yapabilir.
+- Yeni ilanlar taslak olarak oluşturulur; yayınlama, kapatma ve arşivleme ayrı işlemlerdir.
+- Arama sonuçlarında yalnızca yayındaki ve süresi dolmamış ilanlar yer alır.
 
-```bash
-curl -X POST http://localhost:8080/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"isveren@example.com","password":"Password123!"}'
-```
+## Hata yanıtları
 
-```bash
-curl -X POST http://localhost:8080/api/companies \
-  -H "Authorization: Bearer $EMPLOYER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Örnek Firma","description":"Yazılım şirketi","location":"İstanbul"}'
-```
-
-```bash
-curl -X POST http://localhost:8080/api/jobs \
-  -H "Authorization: Bearer $EMPLOYER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Java Developer",
-    "description": "Spring Boot ile backend geliştirme.",
-    "requirements": "Java 17, Spring Boot, SQL",
-    "location": "İstanbul",
-    "employmentType": "FULL_TIME",
-    "workMode": "HYBRID",
-    "minSalary": 60000,
-    "maxSalary": 90000,
-    "categoryId": 1,
-    "skillIds": [1, 2, 3],
-    "expiresAt": "2027-12-31T23:59:59Z"
-  }'
-```
-
-```bash
-curl -X PATCH http://localhost:8080/api/jobs/1/publish \
-  -H "Authorization: Bearer $EMPLOYER_TOKEN"
-```
-
-### 3. CV ve başvuru (aday tokenı ile)
-
-```bash
-curl -X POST http://localhost:8080/api/files/cv \
-  -H "Authorization: Bearer $CANDIDATE_TOKEN" \
-  -F "file=@cv.pdf;type=application/pdf"
-```
-
-Dönen `objectKey` değerini profil veya başvuru `cvUrl` alanına yazın.
-
-```bash
-curl -X POST http://localhost:8080/api/jobs/1/applications \
-  -H "Authorization: Bearer $CANDIDATE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"coverLetter":"Pozisyonla ilgileniyorum."}'
-```
-
-### 4. Değerlendirme (işveren tokenı ile)
-
-```bash
-curl -X PATCH http://localhost:8080/api/applications/1/status \
-  -H "Authorization: Bearer $EMPLOYER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status":"REVIEWED"}'
-```
-
-## İş Kuralları
-
-- Aynı aday aynı ilana yalnızca bir kez başvurabilir; veritabanında da benzersiz kısıt vardır.
-- Yalnızca `PUBLISHED` ve süresi dolmamış ilanlara başvurulur.
-- Başvuru için adayın profilinde veya istekte geçerli bir CV anahtarı bulunmalıdır.
-- Durum geçişleri katıdır:
-  - `APPLIED → REVIEWED`
-  - `REVIEWED → HIRED` veya `REVIEWED → REJECTED`
-  - `HIRED` ve `REJECTED` son durumdur.
-- Aynı duruma tekrar geçiş idempotent kabul edilir; e-posta tekrar gönderilmez.
-- Firma ve ilan işlemlerinde sahiplik kontrolü yapılır; başka işverenin kaynağına erişim `403` döner.
-- İlan `DRAFT` olarak oluşturulur; yayınlama, kapatma ve arşivleme ayrı uç noktalardadır.
-- Arama yalnızca yayında ve süresi dolmamış ilanları getirir; `keyword` başlık/açıklamada, `city` konumda aranır.
-
-## Hata Formatı
-
-Tüm hatalar aynı gövdeyle döner:
+API hataları `timestamp`, `status`, `error`, `message` ve `path` alanlarını içeren ortak bir JSON biçimi kullanır. Doğrulama hatalarında alan bazlı `validationErrors` bilgisi de döner.
 
 ```json
 {
-  "timestamp": "2026-11-05T21:00:00Z",
+  "timestamp": "2026-11-09T12:00:00Z",
   "status": 400,
   "error": "Bad Request",
   "message": "Doğrulama hatası",
@@ -401,16 +248,18 @@ Tüm hatalar aynı gövdeyle döner:
 }
 ```
 
-| Kod | Anlamı |
-|-----|--------|
-| `400` | Geçersiz istek, doğrulama hatası veya geçersiz durum geçişi |
+| HTTP kodu | Anlamı |
+|---|---|
+| `400` | Geçersiz istek, doğrulama hatası veya izin verilmeyen durum geçişi |
 | `401` | Eksik/geçersiz access token veya hatalı giriş |
-| `403` | Rol veya kaynak sahipliği yetersiz |
+| `403` | Rol ya da kaynak sahipliği yetersiz |
 | `404` | Kaynak bulunamadı |
-| `409` | Çakışma (ör. e-posta ya da başvuru zaten mevcut) |
+| `409` | Çakışma; örneğin e-posta veya başvuru zaten mevcut |
 | `500` | Beklenmeyen sunucu hatası |
 
-## Testleri Çalıştırma
+## Testler
+
+Tüm testleri çalıştırmak için:
 
 ```bash
 ./mvnw test
@@ -418,67 +267,49 @@ Tüm hatalar aynı gövdeyle döner:
 
 Windows:
 
-```text
-mvnw.cmd test
+```powershell
+.\mvnw.cmd test
 ```
 
-Test suite'i Mockito/JUnit ile veritabanı gerektirmeden servis kurallarını, JWT/refresh token davranışlarını, dosya erişim doğrulamasını, mail bildirimlerini ve temel hata yanıtlarını doğrular.
+Birim testleri servis kurallarını, JWT ve refresh token davranışlarını, dosya erişimini, e-posta bildirimlerini ve hata yanıtlarını kapsar. Entegrasyon testleri PostgreSQL ve MinIO’yu Testcontainers ile başlatır; tam test paketini çalıştırırken Docker’ın açık olması gerekir.
 
-Entegrasyon testleri (PostgreSQL + MinIO için Testcontainers kullanır, Docker gerektirir):
+Docker olmadan tek bir birim testini çalıştırmak için örnek:
 
 ```bash
-./mvnw test -Dintegration.tests.enabled=true
+./mvnw -Dtest=AuthServiceTest test
 ```
 
-## Postman
+## Postman koleksiyonu
 
-Hazır koleksiyon: `postman/job-board-api.postman_collection.json`
+Hazır istekler `postman/job-board-api.postman_collection.json` dosyasındadır. Koleksiyonu Postman’e aktarın ve `baseUrl` değişkeninin `http://localhost:8080` olduğunu doğrulayın. İsteklerde kullanılan token ve kaynak kimlikleri koleksiyonun test betikleriyle saklanır.
 
-1. Postman'de **Import** ile koleksiyonu içe aktarın.
-2. `baseUrl` değişkeninin `http://localhost:8080` olduğunu kontrol edin.
-3. Tokenları ve oluşturulan kimlikleri test scriptleriyle otomatik kaydedilir.
+## Proje yapısı
 
-## Proje Yapısı
+```text
+src/main/java/com/jobboard/api/
+├── config/       Uygulama ve altyapı yapılandırması
+├── controller/   REST uç noktaları
+├── dto/          İstek ve yanıt modelleri
+├── entity/       JPA entity’leri ve enum’lar
+├── exception/    İş hataları ve merkezi hata yönetimi
+├── mapper/       Entity–DTO dönüşümleri
+├── repository/   Spring Data JPA arayüzleri
+├── security/     JWT ve Spring Security bileşenleri
+└── service/      İş kuralları ve transaction yönetimi
 
-```
-job-board-api/
-├── .mvn/wrapper/                 # Maven Wrapper yapılandırması
-├── mvnw, mvnw.cmd                # Maven Wrapper betikleri
-├── Dockerfile                    # Uygulama imajı (multi-stage)
-├── docker-compose.yml            # PostgreSQL + MinIO + Mailpit
-├── .gitattributes                # Wrapper satır sonları
-├── .gitignore                    # Git dışı dosyalar
-├── .env.example                  # Ortam değişkeni referansı
-├── postman/                      # Postman koleksiyonu
-├── pom.xml                       # Maven yapılandırması
-├── src/main/java/com/jobboard/api/
-│   ├── config/                   # Security, async, MinIO, seed verisi
-│   ├── controller/               # REST uç noktaları
-│   ├── dto/                      # Request ve Response kayıtları
-│   ├── entity/                   # JPA entity'leri ve enum'lar
-│   ├── exception/                # İş hataları ve merkezi handler
-│   ├── mapper/                   # Entity ↔ DTO dönüşümleri
-│   ├── repository/               # Spring Data JPA arayüzleri
-│   ├── security/                 # JWT filtreleri ve user details
-│   └── service/                  # İş kuralları ve transaction'lar
-├── src/main/resources/
-│   ├── application.yml
-│   └── db/migration/            # Flyway migration'ları
-└── src/test/java/com/jobboard/api/
-    ├── controller/              # Controller testleri
-    ├── exception/               # Exception handler testleri
-    ├── integration/             # Entegrasyon testleri (Docker gerekli)
-    └── service/                 # Servis testleri
+src/main/resources/
+├── application.yml
+└── db/migration/   Flyway migration’ları
+
+src/test/java/com/jobboard/api/
+├── controller/
+├── exception/
+├── integration/    Testcontainers entegrasyon testleri
+└── service/
 ```
 
-## Güvenlik Notları
+## Güvenlik ve lisans
 
-- Üretimde `JWT_SECRET`, veritabanı ve MinIO kimlik bilgileri ortam değişkenlerinden verilmelidir.
-- Depoya gerçek `.env`, anahtar veya sertifika eklenmemelidir; `.env` ve `secrets/` klasörü `.gitignore` içindedir.
-- CV yüklemesinde hem uzantı hem `Content-Type` hem de dosya imzası (magic bytes) kontrol edilir.
-- MinIO kovası varsayılan olarak private'tır; erişim kısa ömürlü imzalı URL ile sağlanır.
-- Public ilan ve firma uç noktaları yalnızca okuma amaçlıdır; tüm yazma işlemleri kimlik doğrulaması ve rol kontrolü gerektirir.
-
-## Lisans
+Üretim ortamında JWT, veritabanı ve MinIO kimlik bilgilerini ortam değişkenlerinden sağlayın. Gerçek `.env` dosyalarını, anahtarları veya sertifikaları depoya eklemeyin. CV yüklemelerinde uzantı, içerik türü ve dosya imzası denetlenir; MinIO kovası varsayılan olarak private tutulur.
 
 Bu depoda henüz bir lisans dosyası bulunmuyor. Kullanım ve yeniden dağıtım koşulları için depo sahibiyle iletişime geçin.
